@@ -223,10 +223,9 @@ class async_chat(asyncore.dispatcher):
 
     def initiate_send(self):
         while self.producer_fifo and self.connected:
-            first = self.producer_fifo[0]
+            first = self.producer_fifo.popleft()
             # handle empty string/buffer or None entry
             if not first:
-                del self.producer_fifo[0]
                 if first is None:
                     self.handle_close()
                     return
@@ -238,9 +237,7 @@ class async_chat(asyncore.dispatcher):
             except TypeError:
                 data = first.more()
                 if data:
-                    self.producer_fifo.appendleft(data)
-                else:
-                    del self.producer_fifo[0]
+                    self.producer_fifo.extendleft([first, data])
                 continue
 
             if isinstance(data, str) and self.use_encoding:
@@ -255,9 +252,7 @@ class async_chat(asyncore.dispatcher):
 
             if num_sent:
                 if num_sent < len(data) or obs < len(first):
-                    self.producer_fifo[0] = first[num_sent:]
-                else:
-                    del self.producer_fifo[0]
+                    self.producer_fifo.appendleft(first[num_sent:])
             # we tried to send some actual data
             return
 

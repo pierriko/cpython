@@ -271,6 +271,62 @@ class TestAsynchat(unittest.TestCase):
         s.join(timeout=TIMEOUT)
         self.assertEqual(c.contents, [b'bytes', b'bytes', b'bytes'])
 
+    def initiate_send_concurrent_access(self, server, client, data, func):
+        # Invoke the callable 'func' in the main thread while another thread
+        # 'othrd' is waiting to send data in initiate_send. The purpose of
+        # 'func' is to represent various paths to initiate_send invocations.
+        mthrd_evt = threading.Event()
+        othrd_evt = threading.Event()
+        mthrd_ident = threading.get_ident()
+
+        def send(data):
+            # The other thread waits in initiate_send while allowing the main
+            # thread to call initiate_send.
+            if threading.get_ident() != mthrd_ident:
+                mthrd_evt.set()
+                othrd_evt.wait()
+            return echo_client.send(client, data)
+
+        client.send = send
+        # Connect the client to the server.
+        for cnt in range(300):
+            asyncore.loop(use_poll=self.usepoll, count=1, timeout=.01)
+            if client.connected:
+                break
+        othrd = threading.Thread(target=lambda : client.push(data))
+        othrd.start()
+        mthrd_evt.wait()
+
+        func()
+        othrd_evt.set()
+        othrd.join()
+        client.push(SERVER_QUIT)
+        asyncore.loop(use_poll=self.usepoll, count=300, timeout=.01)
+        server.join(timeout=TIMEOUT)
+        if server.is_alive():
+            self.fail("join() timed out")
+
+    def test_initiate_send_index_error(self):
+        # Check that concurrent access to initiate_send does not raise
+        # IndexError: deque index out of range (issue 17925).
+        s, event = start_echo_server()
+        c = echo_client(None, s.port)
+        othrd_data = b'thread data\n'
+        self.initiate_send_concurrent_access(s, c, othrd_data, c.handle_write)
+        self.assertEqual(c.contents, [])
+        self.assertEqual(c.buffer, othrd_data)
+
+    def test_initiate_send_duplicate(self):
+        # Check that concurrent access to initiate_send does not cause
+        # duplicate data to be sent (issue 17925).
+        s, event = start_echo_server()
+        c = echo_client(None, s.port)
+        mthrd_data = b'main data\n'
+        othrd_data = b'thread data\n'
+        self.initiate_send_concurrent_access(s, c, othrd_data,
+                                             lambda: c.push(mthrd_data))
+        self.assertEqual(c.contents, [])
+        self.assertEqual(c.buffer, mthrd_data + othrd_data)
 
 class TestAsynchat_WithPoll(TestAsynchat):
     usepoll = True
